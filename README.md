@@ -1,2 +1,9 @@
 # Text_VAE_tf
-Tensorflow Implementation of text VAE
+Tensorflow Implementation of text VAE inspired by [Keras Implementation of text VAE](https://github.com/NicGian/text_VAE)
+
+Paper: https://arxiv.org/abs/1511.06349
+
+
+## Requirements
+- Tensorflow == 1.12.0
+- numpy ==1.14.5
