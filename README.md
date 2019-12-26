@@ -15,4 +15,4 @@ Paper: https://arxiv.org/abs/1511.06349
 
 
 ## Model
-![VAE Model](/images/vae.png)
+![VAE Model](vae.PNG)
