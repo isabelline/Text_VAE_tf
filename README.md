@@ -7,3 +7,8 @@ Paper: https://arxiv.org/abs/1511.06349
 ## Requirements
 - Tensorflow == 1.12.0
 - numpy ==1.14.5
+
+
+## Dataset Size
+- train: 8595 / test: 2149
+- 775000 sentences ?
