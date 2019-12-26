@@ -1,8 +1,5 @@
-import collections
-import csv
 import os
 import tensorflow as tf
-import tf_metrics
 import pickle
 import numpy as np
 import re
@@ -20,14 +17,14 @@ flags.DEFINE_string(
     "for the task.")
 
 flags.DEFINE_string(
-    "output_dir", './model10',
+    "output_dir", './model11',
     "The output directory where the model checkpoints will be written.")
 
 flags.DEFINE_integer("batch_count", 32, "Total batch size for training.")
 
 flags.DEFINE_float("learning_rate", 0.001, "The initial learning rate for Adam.")
 
-flags.DEFINE_float("epoch_count", 3.0,
+flags.DEFINE_integer("epoch_count", 1,
                    "Total number of training epochs to perform.")
 
 flags.DEFINE_float(
@@ -38,7 +35,9 @@ flags.DEFINE_float(
 flags.DEFINE_bool("use_tpu", False, "Whether to use TPU or GPU/CPU.")
 flags.DEFINE_integer("train_count", 8595, None)
 flags.DEFINE_integer("test_count", 2149, None)
-
+flags.DEFINE_bool("do_train", True, None)
+flags.DEFINE_bool("do_eval", False, None)
+flags.DEFINE_bool("do_test", True, None)
 
 class Console:
 
@@ -48,32 +47,34 @@ class Console:
 
     def main(self):
         epoch_train_steps = int(FLAGS.train_count / FLAGS.batch_count)
-        num_train_steps = epoch_train_steps * FLAGS.epoch_count
+        num_train_steps = epoch_train_steps * float(FLAGS.epoch_count)
         num_warmup_steps = int(num_train_steps * FLAGS.warmup_rate)
         print("Epoch train steps %d" % epoch_train_steps)
         print("Total train steps %d" % num_train_steps)
-        mode = tf.estimator.ModeKeys.PREDICT
+
         model_fn = build_model_fn(num_train_steps, num_warmup_steps)
         estimator = tf.estimator.Estimator(model_fn, model_dir=FLAGS.output_dir)
 
-        
-        mode = tf.estimator.ModeKeys.TRAIN
-        train_input_fn = build_input_fn(mode, "Train", "Train")
-        estimator.train(train_input_fn)
+        if FLAGS.do_train:
+            mode = tf.estimator.ModeKeys.TRAIN
+            train_input_fn = build_input_fn(mode, "Train", "Train")
+            estimator.train(train_input_fn)
 
-        mode = tf.estimator.ModeKeys.EVAL
-        test_input_fn = build_input_fn(mode, "Test", "Test")
-        estimator.evaluate(test_input_fn)
-        
-#         mode = tf.estimator.ModeKeys.TRAIN
-#         train_input_fn = build_input_fn(mode, "Train", "Train")
-#         predictions = estimator.predict(train_input_fn)
-#         cnt =0
-#         for item in predictions:
-#             if cnt > 3:
-#                 break
-#             print(item)
-#             cnt +=1
+        if FLAGS.do_eval:
+            mode = tf.estimator.ModeKeys.EVAL
+            test_input_fn = build_input_fn(mode, "Test", "Test")
+            estimator.evaluate(test_input_fn)
+
+        if FLAGS.do_predict:
+            mode = tf.estimator.ModeKeys.PREDICT
+            test_input_fn = build_input_fn(mode, "Test", "Test")
+            predictions = estimator.predict(test_input_fn)
+            cnt =0
+            for item in predictions:
+                if cnt > 3:
+                    break
+                print(item)
+                cnt +=1
 
 
 def build_input_fn(mode, X_file, Y_file):
@@ -82,17 +83,16 @@ def build_input_fn(mode, X_file, Y_file):
         if mode == tf.estimator.ModeKeys.TRAIN:
             with open(FLAGS.data_dir + X_file, 'rb') as f:
                 data = pickle.load(f)
-            with open(FLAGS.data_dir + X_file, 'rb') as f:
-                labels = pickle.load(f)
         else:
             with open(FLAGS.data_dir + X_file, 'rb') as f:
                 data = pickle.load(f)
-            with open(FLAGS.data_dir + X_file, 'rb') as f:
-                labels = pickle.load(f)
+
                 
-        ds = tf.data.Dataset.from_tensor_slices((np.asarray(data), np.asarray(labels)))
-        
-        batch = ds.repeat().batch(FLAGS.batch_count)
+        ds = tf.data.Dataset.from_tensor_slices((data, data))
+        if mode == tf.estimator.ModeKeys.TRAIN:
+            batch = ds.repeat(FLAGS.epoch_count).apply(tf.contrib.data.batch_and_drop_remainder(FLAGS.batch_count))
+        else:
+            batch = ds.batch(FLAGS.batch_count)
         return batch
 
 
@@ -127,42 +127,40 @@ def build_model_fn( num_train_steps, num_warmup_steps):
         fw_output = outputs[0][:,:,-1]
         bw_output = outputs[1][:,:,-1]
         cat_output = tf.concat([fw_output, bw_output], axis=1)
-        d_output_mean = tf.keras.layers.Dense(DD)(cat_output)
-        d_output_sd = tf.keras.layers.Dense(DD, activation='softplus')(cat_output)
+        z_output_mean = tf.keras.layers.Dense(DD)(cat_output)
+        z_output_sd = tf.keras.layers.Dense(DD)(cat_output)
         epsilon = tf.random_normal(shape=(BS, DD), mean=0., stddev=1.0)
-        z = d_output_mean + tf.multiply(tf.exp(d_output_sd / 2) , epsilon)
-        z = d_output_mean
+        z = z_output_mean + tf.multiply(tf.exp(z_output_sd / 2) , epsilon)
         
         with tf.variable_scope("decoder"):
             repeat_z = tf.tile(tf.expand_dims(z, 1), [1,LEN,1])
-            cell = tf.nn.rnn_cell.BasicLSTMCell(LD, forget_bias=1.0)
+            cell = tf.nn.rnn_cell.BasicLSTMCell(LD)
             decode, states = tf.nn.dynamic_rnn(cell, repeat_z, dtype=tf.float32)
-            decode_mean = tf.keras.layers.Dense(embedding.shape[0], activation='sigmoid')(decode)
+            decode_mean = tf.keras.layers.Dense(embedding.shape[0])(decode)
 
         with tf.variable_scope("loss"):
             labels = tf.cast(labels, tf.int32)
-        target_weights = tf.constant(np.ones((BS, LEN)), tf.float32)
+            target_weights = tf.constant(np.ones((BS, LEN)), tf.float32)
 
-        xent_loss = tf.reduce_sum(tf.contrib.seq2seq.sequence_loss(decode_mean, labels,
+            xent_loss = tf.reduce_sum(tf.contrib.seq2seq.sequence_loss(decode_mean, labels,
                                                                    weights=target_weights,
                                                                    average_across_timesteps=False,
                                                                    average_across_batch=False), axis=-1)
-        logits = decode_mean
-        predictions = tf.argmax(logits, axis=-1, output_type=tf.int32)
-        kl_loss = - 0.5 * tf.reduce_sum(1 + d_output_sd - tf.square(d_output_mean) - tf.exp(d_output_mean), axis=-1)
-
-        xent_loss = tf.reduce_mean(xent_loss)
-
-        kl_loss = tf.reduce_mean(kl_loss)
-
-        loss = xent_loss + (kl_weight * kl_loss)
+            logits = decode_mean
+            predictions = tf.argmax(logits, axis=-1, output_type=tf.int32)
+            kl_loss = - 0.5 * tf.reduce_sum(1 + z_output_sd - tf.square(z_output_mean) - tf.exp(z_output_mean), axis=-1)
+            xent_loss = tf.reduce_mean(xent_loss)
+            kl_loss = tf.reduce_mean(kl_loss)
+            loss = xent_loss + (kl_weight * kl_loss)
+            tf.summary.scalar("total_loss",loss)
 
         
         output_spec = None
 
         if mode == tf.estimator.ModeKeys.TRAIN:
-            train_op = create_optimizer(
-                loss, FLAGS.learning_rate, num_train_steps, num_warmup_steps, use_tpu=False)
+            train_op = tf.train.AdamOptimizer(1e-3).minimize(loss,global_step=tf.train.get_global_step())
+#            train_op = create_optimizer(
+#                loss, FLAGS.learning_rate, num_train_steps, num_warmup_steps, use_tpu=False)
             output_spec = tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op)
         elif mode == tf.estimator.ModeKeys.EVAL:
 
@@ -181,7 +179,7 @@ def build_model_fn( num_train_steps, num_warmup_steps):
                 eval_metric_ops=eval_metrics)
         else:
             output_spec = tf.estimator.EstimatorSpec(mode=mode,
-                                                     predictions={"prediction":e_l, "log_probs": logits})
+                                                     predictions={"prediction":predictions})
         return output_spec
     return model_fn
 
